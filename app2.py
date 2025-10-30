@@ -133,6 +133,17 @@ def infer_hparams_from_state_dict(state_dict):
 # --------------------------
 # Tk App：基于 Trie 的逐词选择
 # --------------------------
+
+# Define UI settings for unified configuration
+UI_SETTINGS = {
+    "font_size": 12,
+    "image_size": (256, 256),
+    "listbox_height": 20,
+    "listbox_width": 40,
+    "padding": 10,
+    "button_padding": 5,
+}
+
 class TrieSelectApp(tk.Tk):
     def __init__(self, args):
         super().__init__()
@@ -205,69 +216,69 @@ class TrieSelectApp(tk.Tk):
 
     # ---------------- UI 构建 ----------------
     def _build_ui(self):
-        # 顶部：图像与工具
+        # Top: Image and tools
         top = ttk.Frame(self)
-        top.pack(side=tk.TOP, fill=tk.X, padx=8, pady=8)
+        top.pack(side=tk.TOP, fill=tk.X, padx=UI_SETTINGS["padding"], pady=UI_SETTINGS["padding"])
 
         self.img_label = ttk.Label(top, text="(生成图在此显示)")
-        self.img_label.pack(side=tk.LEFT, padx=8)
+        self.img_label.pack(side=tk.LEFT, padx=UI_SETTINGS["padding"])
 
         right = ttk.Frame(top)
-        right.pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        right.pack(side=tk.LEFT, fill=tk.Y, padx=UI_SETTINGS["padding"])
 
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(right, textvariable=self.status_var).pack(anchor="w", pady=(0, 6))
+        ttk.Label(right, textvariable=self.status_var, font=("Arial", UI_SETTINGS["font_size"])).pack(anchor="w", pady=(0, 6))
 
         row1 = ttk.Frame(right)
-        row1.pack(anchor="w", pady=2)
-        ttk.Button(row1, text="Resample z", command=self._resample_z).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row1, text="Save PNG", command=self._save_png).pack(side=tk.LEFT, padx=2)
+        row1.pack(anchor="w", pady=UI_SETTINGS["button_padding"])
+        ttk.Button(row1, text="Resample z", command=self._resample_z).pack(side=tk.LEFT, padx=UI_SETTINGS["button_padding"])
+        ttk.Button(row1, text="Save PNG", command=self._save_png).pack(side=tk.LEFT, padx=UI_SETTINGS["button_padding"])
 
         row2 = ttk.Frame(right)
-        row2.pack(anchor="w", pady=2)
-        ttk.Button(row2, text="Undo", command=self._undo).pack(side=tk.LEFT, padx=2)
-        ttk.Button(row2, text="Clear", command=self._clear).pack(side=tk.LEFT, padx=2)
+        row2.pack(anchor="w", pady=UI_SETTINGS["button_padding"])
+        ttk.Button(row2, text="Undo", command=self._undo).pack(side=tk.LEFT, padx=UI_SETTINGS["button_padding"])
+        ttk.Button(row2, text="Clear", command=self._clear).pack(side=tk.LEFT, padx=UI_SETTINGS["button_padding"])
 
-        ttk.Separator(self, orient="horizontal").pack(fill=tk.X, padx=8, pady=(4, 6))
+        ttk.Separator(self, orient="horizontal").pack(fill=tk.X, padx=UI_SETTINGS["padding"], pady=(4, 6))
 
-        # 中部：前缀显示
+        # Middle: Prefix display
         prefix_frame = ttk.Frame(self)
-        prefix_frame.pack(side=tk.TOP, fill=tk.X, padx=8)
-        ttk.Label(prefix_frame, text="Prefix:").pack(side=tk.LEFT)
+        prefix_frame.pack(side=tk.TOP, fill=tk.X, padx=UI_SETTINGS["padding"])
+        ttk.Label(prefix_frame, text="Prefix:", font=("Arial", UI_SETTINGS["font_size"])).pack(side=tk.LEFT)
         self.prefix_var = tk.StringVar(value="")
-        self.prefix_label = ttk.Label(prefix_frame, textvariable=self.prefix_var)
+        self.prefix_label = ttk.Label(prefix_frame, textvariable=self.prefix_var, font=("Arial", UI_SETTINGS["font_size"]))
         self.prefix_label.pack(side=tk.LEFT, padx=6)
 
-        # 底部：候选词 Listbox（可滚动） + “添加”按钮
+        # Bottom: Listbox for next tokens + Add button
         bottom = ttk.Frame(self)
-        bottom.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=(6, 8))
+        bottom.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=UI_SETTINGS["padding"], pady=(6, 8))
 
         left = ttk.Frame(bottom)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        ttk.Label(left, text="Next tokens:").pack(anchor="w")
+        ttk.Label(left, text="Next tokens:", font=("Arial", UI_SETTINGS["font_size"])).pack(anchor="w")
 
-        self.listbox = tk.Listbox(left, height=14, exportselection=False)
+        self.listbox = tk.Listbox(left, height=UI_SETTINGS["listbox_height"], width=UI_SETTINGS["listbox_width"], exportselection=False, font=("Arial", UI_SETTINGS["font_size"]))
         yscroll = ttk.Scrollbar(left, orient="vertical", command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=yscroll.set)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         yscroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # 双击选择
+        # Double-click to select
         self.listbox.bind("<Double-Button-1>", lambda e: self._add_selected())
 
         controls = ttk.Frame(bottom)
-        controls.pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        controls.pack(side=tk.LEFT, fill=tk.Y, padx=UI_SETTINGS["padding"])
 
-        ttk.Button(controls, text="Add ➜", command=self._add_selected).pack(pady=4, fill=tk.X)
+        ttk.Button(controls, text="Add ➜", command=self._add_selected, font=("Arial", UI_SETTINGS["font_size"])).pack(pady=4, fill=tk.X)
 
-        # 可直接输入一个 token 添加
-        ttk.Label(controls, text="Manual token:").pack(anchor="w", pady=(8, 2))
-        self.manual_entry = ttk.Entry(controls)
+        # Manual token entry
+        ttk.Label(controls, text="Manual token:", font=("Arial", UI_SETTINGS["font_size"])).pack(anchor="w", pady=(8, 2))
+        self.manual_entry = ttk.Entry(controls, font=("Arial", UI_SETTINGS["font_size"]))
         self.manual_entry.pack(fill=tk.X)
         self.manual_entry.bind("<Return>", lambda e: self._add_manual())
 
-        ttk.Button(controls, text="Add manual", command=self._add_manual).pack(pady=4, fill=tk.X)
+        ttk.Button(controls, text="Add manual", command=self._add_manual, font=("Arial", UI_SETTINGS["font_size"])).pack(pady=4, fill=tk.X)
 
     # ------------- 逻辑 -------------
     def _refresh_prefix_view(self):
