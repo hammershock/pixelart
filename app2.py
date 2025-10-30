@@ -1,28 +1,28 @@
-# app2.py
-# 逐词选择（基于前缀树）来构造条件；每次变更立即生成图像
+# app2.py — 可配置 UI 的 Trie 逐词选择器
+# 通过 UIConfig 统一配置 选框/字体/图像大小 等
 import os
 import math
+import json
 import argparse
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import tkinter.font as tkfont
 
 import torch
 from torch import nn
 import numpy as np
 from PIL import Image, ImageTk
 
-# 从你之前的文件导入
 from build_caption_trie import CaptionTrie
 try:
-    # 可选：若你在 build_caption_trie.py 中也定义了 build_trie_from_csv
     from build_caption_trie import build_trie_from_csv
 except Exception:
     build_trie_from_csv = None
 
 
-# --------------------------
-# 与 train_conv.py 对齐的模型定义
-# --------------------------
+# =========================
+# 与 train_conv.py 对齐的模型
+# =========================
 def conv_block(in_ch, out_ch, downsample=True):
     stride = 2 if downsample else 1
     return nn.Sequential(
@@ -130,29 +130,121 @@ def infer_hparams_from_state_dict(state_dict):
     return base_ch, latent_dim
 
 
-# --------------------------
-# Tk App：基于 Trie 的逐词选择
-# --------------------------
-
-# Define UI settings for unified configuration
-UI_SETTINGS = {
-    "font_size": 12,
-    "image_size": (256, 256),
-    "listbox_height": 20,
-    "listbox_width": 40,
-    "padding": 10,
-    "button_padding": 5,
+# =========================
+# UI 配置（抽离）
+# =========================
+_RESAMPLE_MAP = {
+    "NEAREST": Image.NEAREST,
+    "BILINEAR": Image.BILINEAR,
+    "BICUBIC": Image.BICUBIC,
+    "LANCZOS": Image.LANCZOS,
 }
 
+class UIConfig:
+    """
+    所有可视化参数集中管理：
+      - 字体/字号
+      - 控件间距
+      - 列表高度/宽度
+      - 图像显示尺寸/插值方法
+      - 主题
+    支持 JSON 文件加载 + CLI 覆盖
+    """
+    def __init__(self, d: dict | None = None):
+        d = d or {}
+        # Font
+        self.font_family: str = d.get("font_family", "Arial")
+        self.font_size_base: int = int(d.get("font_size_base", 11))
+        self.font_size_title: int = int(d.get("font_size_title", 12))
+        self.bold_title: bool = bool(d.get("bold_title", True))
+
+        # Spacing / padding
+        self.pad: int = int(d.get("pad", 8))
+        self.inner_pad: int = int(d.get("inner_pad", 6))
+        self.button_padx: int = int(d.get("button_padx", 2))
+        self.button_pady: int = int(d.get("button_pady", 2))
+
+        # Listbox
+        self.listbox_height: int = int(d.get("listbox_height", 14))
+        self.listbox_width: int = int(d.get("listbox_width", 32))
+
+        # Image display
+        self.image_width: int = int(d.get("image_width", 128))
+        self.image_height: int = int(d.get("image_height", 128))
+        self.resample: str = str(d.get("resample", "NEAREST")).upper()
+        if self.resample not in _RESAMPLE_MAP:
+            self.resample = "NEAREST"
+
+        # Theme (ttk style theme，可根据系统安装情况选择)
+        self.theme: str = d.get("theme", "clam")  # 'alt', 'default', 'clam', 'vista'...
+
+    @classmethod
+    def from_json(cls, path: str | None):
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            return cls(d)
+        return cls({})
+
+    def override_with_args(self, args):
+        # 仅覆盖传入的 CLI 选项（None 则不动）
+        for k in [
+            "font_family", "font_size_base", "font_size_title", "bold_title",
+            "pad", "inner_pad", "button_padx", "button_pady",
+            "listbox_height", "listbox_width",
+            "image_width", "image_height", "resample", "theme",
+        ]:
+            v = getattr(args, k, None)
+            if v is not None:
+                if k in {"font_size_base", "font_size_title", "pad", "inner_pad",
+                         "button_padx", "button_pady", "listbox_height", "listbox_width",
+                         "image_width", "image_height"}:
+                    v = int(v)
+                if k == "bold_title":
+                    v = bool(v)
+                if k == "resample":
+                    v = str(v).upper()
+                    if v not in _RESAMPLE_MAP:  # 防错
+                        v = self.resample
+                setattr(self, k, v)
+
+    # 便捷：获取 PIL 插值常量
+    @property
+    def pil_resample(self):
+        return _RESAMPLE_MAP[self.resample]
+
+
+# =========================
+# Tk App：基于 Trie 的逐词选择（使用 UIConfig）
+# =========================
 class TrieSelectApp(tk.Tk):
-    def __init__(self, args):
+    def __init__(self, args, ui: UIConfig):
         super().__init__()
-        self.title("Pixel CVAE - Trie Word Picker")
+        self.title("Pixel CVAE - Trie Word Picker (Configurable UI)")
         self.args = args
+        self.ui = ui
 
         # 设备
         self.device = torch.device("cpu" if args.cpu or not torch.cuda.is_available() else "cuda")
         torch.manual_seed(args.seed)
+
+        # 主题 & 字体
+        style = ttk.Style(self)
+        try:
+            style.theme_use(self.ui.theme)
+        except Exception:
+            pass  # 不支持的主题则忽略
+
+        self.font_base = tkfont.Font(family=self.ui.font_family, size=self.ui.font_size_base)
+        self.font_title = tkfont.Font(
+            family=self.ui.font_family,
+            size=self.ui.font_size_title,
+            weight="bold" if self.ui.bold_title else "normal",
+        )
+
+        # 设置 ttk 默认字体
+        style.configure(".", font=self.font_base)
+        style.configure("Title.TLabel", font=self.font_title)
 
         # 加载/构建 Trie
         if args.trie and os.path.exists(args.trie):
@@ -168,16 +260,15 @@ class TrieSelectApp(tk.Tk):
             messagebox.showerror("Error", "未找到有效的 Trie。请提供 --trie 或 --csv 以构建。")
             raise SystemExit(1)
 
-        # 读取 vocab（token->idx）
+        # 读取 vocab
         if not args.vocab or (not os.path.exists(args.vocab)):
-            messagebox.showwarning("Warning", "未提供 vocab.json，将无法将选择映射为条件向量（使用全0）。")
+            messagebox.showwarning("Warning", "未提供 vocab.json，将使用全0条件向量。")
             self.vocab = {}
         else:
-            import json
             with open(args.vocab, "r", encoding="utf-8") as f:
                 self.vocab = json.load(f)
 
-        # 加载模型 ckpt
+        # 模型
         ckpt = torch.load(args.ckpt, map_location=self.device)
         self.state_dict = ckpt["model_state_dict"]
         if "img_shape" not in ckpt:
@@ -187,8 +278,7 @@ class TrieSelectApp(tk.Tk):
         self.cond_dim_ckpt = ckpt.get("cond_dim", None)
         self.cond_dim = args.cond_dim if args.cond_dim is not None else (self.cond_dim_ckpt or 270)
         if self.cond_dim_ckpt is not None and self.cond_dim != self.cond_dim_ckpt:
-            print(f"[Warn] cond_dim mismatch: ckpt={self.cond_dim_ckpt}, cli={self.cond_dim}. "
-                  f"使用 cli 值 {self.cond_dim}。")
+            print(f"[Warn] cond_dim mismatch: ckpt={self.cond_dim_ckpt}, cli={self.cond_dim}，使用 cli 值。")
 
         base_ch, latent_dim = infer_hparams_from_state_dict(self.state_dict)
         self.latent_dim = latent_dim
@@ -204,97 +294,103 @@ class TrieSelectApp(tk.Tk):
 
         # 交互状态
         self.z = torch.randn(1, self.latent_dim, device=self.device)
-        self.prefix_tokens = []  # 已选择的前缀
+        self.prefix_tokens = []
         self.c = torch.zeros(1, self.cond_dim, device=self.device)
 
-        # UI
+        # 构建 UI
         self._build_ui()
 
-        # 初始化建议+图像
+        # 初始化
         self._refresh_suggestions()
         self._schedule_infer()
 
-    # ---------------- UI 构建 ----------------
+    # ---------------- UI ----------------
     def _build_ui(self):
-        # Top: Image and tools
-        top = ttk.Frame(self)
-        top.pack(side=tk.TOP, fill=tk.X, padx=UI_SETTINGS["padding"], pady=UI_SETTINGS["padding"])
+        pad = self.ui.pad
+        ip = self.ui.inner_pad
 
-        self.img_label = ttk.Label(top, text="(生成图在此显示)")
-        self.img_label.pack(side=tk.LEFT, padx=UI_SETTINGS["padding"])
+        # 顶部：图像 + 工具
+        top = ttk.Frame(self, padding=pad)
+        top.pack(side=tk.TOP, fill=tk.X)
+
+        self.img_label = ttk.Label(top, text="(生成图在此显示)", style="Title.TLabel")
+        self.img_label.pack(side=tk.LEFT, padx=ip)
 
         right = ttk.Frame(top)
-        right.pack(side=tk.LEFT, fill=tk.Y, padx=UI_SETTINGS["padding"])
+        right.pack(side=tk.LEFT, fill=tk.Y, padx=ip)
 
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(right, textvariable=self.status_var, font=("Arial", UI_SETTINGS["font_size"])).pack(anchor="w", pady=(0, 6))
+        ttk.Label(right, textvariable=self.status_var).pack(anchor="w", pady=(0, ip))
 
         row1 = ttk.Frame(right)
-        row1.pack(anchor="w", pady=UI_SETTINGS["button_padding"])
-        ttk.Button(row1, text="Resample z", command=self._resample_z).pack(side=tk.LEFT, padx=UI_SETTINGS["button_padding"])
-        ttk.Button(row1, text="Save PNG", command=self._save_png).pack(side=tk.LEFT, padx=UI_SETTINGS["button_padding"])
+        row1.pack(anchor="w", pady=self.ui.button_pady)
+        ttk.Button(row1, text="Resample z", command=self._resample_z).pack(side=tk.LEFT, padx=self.ui.button_padx)
+        ttk.Button(row1, text="Save PNG", command=self._save_png).pack(side=tk.LEFT, padx=self.ui.button_padx)
 
         row2 = ttk.Frame(right)
-        row2.pack(anchor="w", pady=UI_SETTINGS["button_padding"])
-        ttk.Button(row2, text="Undo", command=self._undo).pack(side=tk.LEFT, padx=UI_SETTINGS["button_padding"])
-        ttk.Button(row2, text="Clear", command=self._clear).pack(side=tk.LEFT, padx=UI_SETTINGS["button_padding"])
+        row2.pack(anchor="w", pady=self.ui.button_pady)
+        ttk.Button(row2, text="Undo", command=self._undo).pack(side=tk.LEFT, padx=self.ui.button_padx)
+        ttk.Button(row2, text="Clear", command=self._clear).pack(side=tk.LEFT, padx=self.ui.button_padx)
 
-        ttk.Separator(self, orient="horizontal").pack(fill=tk.X, padx=UI_SETTINGS["padding"], pady=(4, 6))
+        ttk.Separator(self, orient="horizontal").pack(fill=tk.X, padx=pad, pady=(4, 6))
 
-        # Middle: Prefix display
-        prefix_frame = ttk.Frame(self)
-        prefix_frame.pack(side=tk.TOP, fill=tk.X, padx=UI_SETTINGS["padding"])
-        ttk.Label(prefix_frame, text="Prefix:", font=("Arial", UI_SETTINGS["font_size"])).pack(side=tk.LEFT)
+        # 中部：前缀显示
+        prefix_frame = ttk.Frame(self, padding=(pad, 0))
+        prefix_frame.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(prefix_frame, text="Prefix:", style="Title.TLabel").pack(side=tk.LEFT)
         self.prefix_var = tk.StringVar(value="")
-        self.prefix_label = ttk.Label(prefix_frame, textvariable=self.prefix_var, font=("Arial", UI_SETTINGS["font_size"]))
-        self.prefix_label.pack(side=tk.LEFT, padx=6)
+        self.prefix_label = ttk.Label(prefix_frame, textvariable=self.prefix_var)
+        self.prefix_label.pack(side=tk.LEFT, padx=ip)
 
-        # Bottom: Listbox for next tokens + Add button
-        bottom = ttk.Frame(self)
-        bottom.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=UI_SETTINGS["padding"], pady=(6, 8))
+        # 底部：候选词 Listbox + 控件
+        bottom = ttk.Frame(self, padding=pad)
+        bottom.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         left = ttk.Frame(bottom)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        ttk.Label(left, text="Next tokens:", font=("Arial", UI_SETTINGS["font_size"])).pack(anchor="w")
-
-        self.listbox = tk.Listbox(left, height=UI_SETTINGS["listbox_height"], width=UI_SETTINGS["listbox_width"], exportselection=False, font=("Arial", UI_SETTINGS["font_size"]))
+        ttk.Label(left, text="Next tokens:").pack(anchor="w")
+        self.listbox = tk.Listbox(
+            left,
+            height=self.ui.listbox_height,
+            width=self.ui.listbox_width,
+            exportselection=False,
+            font=self.font_base,
+        )
         yscroll = ttk.Scrollbar(left, orient="vertical", command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=yscroll.set)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         yscroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Double-click to select
         self.listbox.bind("<Double-Button-1>", lambda e: self._add_selected())
 
         controls = ttk.Frame(bottom)
-        controls.pack(side=tk.LEFT, fill=tk.Y, padx=UI_SETTINGS["padding"])
+        controls.pack(side=tk.LEFT, fill=tk.Y, padx=ip)
 
-        ttk.Button(controls, text="Add ➜", command=self._add_selected, font=("Arial", UI_SETTINGS["font_size"])).pack(pady=4, fill=tk.X)
+        ttk.Button(controls, text="Add ➜", command=self._add_selected).pack(pady=4, fill=tk.X)
 
-        # Manual token entry
-        ttk.Label(controls, text="Manual token:", font=("Arial", UI_SETTINGS["font_size"])).pack(anchor="w", pady=(8, 2))
-        self.manual_entry = ttk.Entry(controls, font=("Arial", UI_SETTINGS["font_size"]))
+        ttk.Label(controls, text="Manual token:").pack(anchor="w", pady=(8, 2))
+        self.manual_entry = ttk.Entry(controls, font=self.font_base)
         self.manual_entry.pack(fill=tk.X)
         self.manual_entry.bind("<Return>", lambda e: self._add_manual())
 
-        ttk.Button(controls, text="Add manual", command=self._add_manual, font=("Arial", UI_SETTINGS["font_size"])).pack(pady=4, fill=tk.X)
+        ttk.Button(controls, text="Add manual", command=self._add_manual).pack(pady=4, fill=tk.X)
 
-    # ------------- 逻辑 -------------
+        # 鼠标滚轮：滚动 listbox（Windows/Mac 差异这里保持默认行为）
+        # 其他容器滚动需求可以按需绑定 Canvas
+
+    # ---------------- 逻辑 ----------------
     def _refresh_prefix_view(self):
         self.prefix_var.set(" ".join(self.prefix_tokens))
 
     def _refresh_suggestions(self):
-        # 基于前缀从 Trie 获取下一层候选
         try:
             candidates = self.trie.next_tokens(self.prefix_tokens)
         except Exception:
             candidates = []
-        # 限制 topk（按字母序）
         candidates = sorted(candidates)
         if self.args.topk > 0:
             candidates = candidates[: self.args.topk]
-
         self.listbox.delete(0, tk.END)
         for tok in candidates:
             self.listbox.insert(tk.END, tok)
@@ -308,7 +404,7 @@ class TrieSelectApp(tk.Tk):
 
     def _add_manual(self):
         tok = self.manual_entry.get().strip().lower()
-        tok = "".join([ch for ch in tok if (ch.isalpha() or ch == " ")])  # 简单清洗
+        tok = "".join([ch for ch in tok if (ch.isalpha() or ch == " ")])
         tok = tok.strip()
         if not tok:
             return
@@ -316,11 +412,9 @@ class TrieSelectApp(tk.Tk):
         self.manual_entry.delete(0, tk.END)
 
     def _push_token(self, tok: str):
-        # 尝试通过 Trie 走一步；若当前前缀下不存在该分支，也允许加入，但后续候选会为空
-        # 这样可以自由编辑，但会提示
         valid = tok in (self.trie.next_tokens(self.prefix_tokens) or [])
         if not valid:
-            print(f"[Warn] '{tok}' 不在当前前缀的候选列表中。")
+            print(f"[Warn] '{tok}' 不在当前前缀候选中。")
         self.prefix_tokens.append(tok)
         self._refresh_prefix_view()
         self._update_condition_from_prefix()
@@ -342,19 +436,14 @@ class TrieSelectApp(tk.Tk):
         self._refresh_suggestions()
         self._schedule_infer()
 
-    # 将前缀映射为 BOW 条件向量
     def _update_condition_from_prefix(self):
         self.c.zero_()
         if not self.vocab:
-            # 没有 vocab，保持全0
             return
         for tok in self.prefix_tokens:
             idx = self.vocab.get(tok, None)
             if idx is not None and 0 <= idx < self.cond_dim:
                 self.c[0, idx] = 1.0
-            else:
-                # 忽略未在 vocab 的词
-                pass
 
     def _schedule_infer(self, delay_ms=50):
         if hasattr(self, "_infer_job") and self._infer_job is not None:
@@ -370,7 +459,8 @@ class TrieSelectApp(tk.Tk):
                 imgs = self.model.decode(self.z, self.c.to(self.device))
             img = imgs[0].clamp(0, 1).cpu().numpy().transpose(1, 2, 0)
             pil = Image.fromarray((img * 255).astype(np.uint8))
-            pil_small = pil.resize((128, 128), resample=Image.NEAREST)
+            pil_small = pil.resize((self.ui.image_width, self.ui.image_height),
+                                   resample=self.ui.pil_resample)
             self.tk_img = ImageTk.PhotoImage(pil_small)
             self.img_label.configure(image=self.tk_img)
             self.status_var.set("Done")
@@ -395,26 +485,51 @@ class TrieSelectApp(tk.Tk):
                 imgs = self.model.decode(self.z, self.c.to(self.device))
             img = imgs[0].clamp(0, 1).cpu().numpy().transpose(1, 2, 0)
             pil = Image.fromarray((img * 255).astype(np.uint8))
-            pil_small = pil.resize((128, 128), resample=Image.NEAREST)
+            pil_small = pil.resize((self.ui.image_width, self.ui.image_height),
+                                   resample=self.ui.pil_resample)
             pil_small.save(file)
             messagebox.showinfo("Saved", f"Saved to {file}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
 
-# --------------------------
+# =========================
 # 入口
-# --------------------------
+# =========================
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--ckpt", type=str, default="./models_conv/last.pt", help="训练得到的checkpoint路径")
-    p.add_argument("--trie", type=str, default="./caption_trie.json", help="前缀树JSON；若不存在且提供--csv则动态构建")
-    p.add_argument("--csv", type=str, default=None, help="可选：CSV路径（image, caption），若--trie不存在则用它构建")
-    p.add_argument("--vocab", type=str, default="./vocab.json", help="token->idx 映射，用于条件BOW")
-    p.add_argument("--cond_dim", type=int, default=270, help="条件向量维度（默认270）")
-    p.add_argument("--topk", type=int, default=64, help="候选展示的最大数量（按字母序截断，0=不限）")
-    p.add_argument("--cpu", action="store_true", help="强制用CPU")
+    # 模型/数据
+    p.add_argument("--ckpt", type=str, default="./models_conv/last.pt")
+    p.add_argument("--trie", type=str, default="./caption_trie.json")
+    p.add_argument("--csv", type=str, default=None)
+    p.add_argument("--vocab", type=str, default="./vocab.json")
+    p.add_argument("--cond_dim", type=int, default=270)
+    p.add_argument("--topk", type=int, default=64)
+    p.add_argument("--cpu", action="store_true")
     p.add_argument("--seed", type=int, default=42)
+
+    # UI 配置文件
+    p.add_argument("--ui_config", type=str, default=None, help="JSON 文件路径")
+
+    # UI 覆盖项（可不填）
+    p.add_argument("--font_family", type=str, default=None)
+    p.add_argument("--font_size_base", type=int, default=None)
+    p.add_argument("--font_size_title", type=int, default=None)
+    p.add_argument("--bold_title", type=int, default=None)  # 1/0
+
+    p.add_argument("--pad", type=int, default=None)
+    p.add_argument("--inner_pad", type=int, default=None)
+    p.add_argument("--button_padx", type=int, default=None)
+    p.add_argument("--button_pady", type=int, default=None)
+
+    p.add_argument("--listbox_height", type=int, default=None)
+    p.add_argument("--listbox_width", type=int, default=None)
+
+    p.add_argument("--image_width", type=int, default=None)
+    p.add_argument("--image_height", type=int, default=None)
+    p.add_argument("--resample", type=str, default=None, help="NEAREST/BILINEAR/BICUBIC/LANCZOS")
+
+    p.add_argument("--theme", type=str, default=None)
     return p.parse_args()
 
 
@@ -422,5 +537,16 @@ if __name__ == "__main__":
     args = parse_args()
     if not os.path.exists(args.ckpt):
         raise FileNotFoundError(f"Checkpoint not found: {args.ckpt}")
-    app = TrieSelectApp(args)
+
+    ui = UIConfig.from_json(args.ui_config)
+    ui.override_with_args(args)
+
+    app = TrieSelectApp(args, ui)
     app.mainloop()
+
+
+# python app2.py \
+#   --ckpt ./models_conv/last.pt \
+#   --trie ./caption_trie.json \
+#   --vocab ./vocab.json \
+#   --ui_config ./ui.json
