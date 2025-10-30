@@ -1,8 +1,8 @@
 
 {
     "font_family": "Menlo",
-    "font_size_base": 12,
-    "font_size_title": 14,
+    "font_size_base": 25,
+    "font_size_title": 30,
     "bold_title": true,
   
     "pad": 10,
@@ -10,11 +10,11 @@
     "button_padx": 4,
     "button_pady": 3,
   
-    "listbox_height": 18,
-    "listbox_width": 36,
+    "listbox_height": 30,
+    "listbox_width": 60,
   
-    "image_width": 160,
-    "image_height": 160,
+    "image_width": 512,
+    "image_height": 512,
     "resample": "NEAREST",
   
     "theme": "clam"

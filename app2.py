@@ -509,7 +509,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
 
     # UI 配置文件
-    p.add_argument("--ui_config", type=str, default=None, help="JSON 文件路径")
+    p.add_argument("--ui_config", type=str, default="./ui.json", help="JSON 文件路径")
 
     # UI 覆盖项（可不填）
     p.add_argument("--font_family", type=str, default=None)
